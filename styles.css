@@ -4,6 +4,27 @@
   height: 100%;
   gap: 12px;
   padding: 12px;
+  min-height: 0;
+}
+.ghostty-terminal-screen.is-focused::after {
+  content: "";
+  position: absolute;
+  width: var(--ghostty-caret-w, 8px);
+  height: var(--ghostty-caret-h, 1.2em);
+  background: var(--text-normal);
+  left: calc(var(--ghostty-screen-padding) + var(--ghostty-caret-x, 0px));
+  top: calc(var(--ghostty-screen-padding) + var(--ghostty-caret-y, 0px));
+  animation: ghostty-caret-blink 1s steps(1, end) infinite;
+  opacity: 0.8;
+}
+.ghostty-terminal-input {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
 }
 .ghostty-terminal-body:focus {
   box-shadow: 0 0 0 2px var(--background-modifier-border);
@@ -24,6 +45,7 @@
   flex-direction: column;
   gap: 8px;
   outline: none;
+  min-height: 0;
 }
 .ghostty-terminal-status {
   font-size: 12px;
@@ -37,13 +59,22 @@
   background: var(--background-primary);
   border: 1px dashed var(--background-modifier-border);
   padding: 10px;
+  min-height: 0;
+  position: relative;
+  --ghostty-screen-padding: 10px;
 }
 .ghostty-terminal-output {
   margin: 0;
   font-family: var(--font-monospace);
   font-size: 12px;
+  line-height: 1.2;
   white-space: pre;
 }
+
+@keyframes ghostty-caret-blink {
+  50% {
+    opacity: 0;
+  }
 }
 
 .ghostty-terminal-placeholder {

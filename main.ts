@@ -16,10 +16,16 @@ class GhosttyTerminalView extends ItemView {
   private vt: GhosttyTerminal | null = null;
   private outputEl: HTMLPreElement | null = null;
   private bodyEl: HTMLElement | null = null;
+  private screenEl: HTMLElement | null = null;
   private statusEl: HTMLElement | null = null;
+  private inputEl: HTMLTextAreaElement | null = null;
   private resizeObserver: ResizeObserver | null = null;
   private pendingRender = false;
   private charSize: { width: number; height: number } | null = null;
+  private autoScroll = true;
+  private composing = false;
+  private compositionBuffer = "";
+  private scrollLines = 0;
 
   constructor(leaf: WorkspaceLeaf, private plugin: GhosttyPlugin) {
     super(leaf);
@@ -80,20 +86,36 @@ class GhosttyTerminalView extends ItemView {
     const screen = this.bodyEl.createEl("div", {
       cls: "ghostty-terminal-screen",
     });
+    this.screenEl = screen;
     this.outputEl = screen.createEl("pre", {
       cls: "ghostty-terminal-output",
     });
+
+    const input = this.bodyEl.createEl("textarea", {
+      cls: "ghostty-terminal-input",
+    });
+    input.spellcheck = false;
+    input.autocapitalize = "off";
+    input.autocomplete = "off";
+    input.autocorrect = "off";
+    this.inputEl = input;
 
     const { cols, rows } = this.measureSize();
     this.vt = native.createTerminal(cols, rows);
 
     let spawnPty: typeof import("node-pty").spawn;
     try {
+      const pluginDir = this.plugin.getPluginDirPath();
+      const nodePtyPath = pluginDir
+        ? join(pluginDir, "node_modules", "node-pty")
+        : "node-pty";
       // eslint-disable-next-line @typescript-eslint/no-var-requires
-      ({ spawn: spawnPty } = require("node-pty") as typeof import("node-pty"));
+      ({ spawn: spawnPty } = require(nodePtyPath) as typeof import("node-pty"));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      this.statusEl?.setText(`Failed to load node-pty: ${message}`);
+      this.statusEl?.setText(
+        `Failed to load node-pty: ${message}. Ensure node_modules is present in the plugin folder.`
+      );
       return;
     }
 
@@ -120,9 +142,31 @@ class GhosttyTerminalView extends ItemView {
     });
 
     this.bodyEl.tabIndex = 0;
-    this.bodyEl.addEventListener("keydown", this.handleKeyDown);
-    this.bodyEl.addEventListener("paste", this.handlePaste);
     this.bodyEl.addEventListener("mousedown", this.focusTerminal);
+    this.bodyEl.addEventListener("click", this.focusTerminal);
+    this.screenEl.addEventListener("scroll", this.handleScroll, { passive: true });
+    this.screenEl.addEventListener("wheel", this.handleWheel, { passive: false });
+    this.inputEl.addEventListener("keydown", this.handleKeyDown, true);
+    this.inputEl.addEventListener("paste", this.handlePaste, true);
+    this.inputEl.addEventListener("input", this.handleInput, true);
+    this.inputEl.addEventListener(
+      "compositionstart",
+      this.handleCompositionStart,
+      true
+    );
+    this.inputEl.addEventListener(
+      "compositionupdate",
+      this.handleCompositionUpdate,
+      true
+    );
+    this.inputEl.addEventListener(
+      "compositionend",
+      this.handleCompositionEnd,
+      true
+    );
+    this.inputEl.addEventListener("focus", this.handleFocus);
+    this.inputEl.addEventListener("blur", this.handleBlur);
+    this.inputEl.focus();
 
     this.resizeObserver = new ResizeObserver(() => this.updateSize());
     this.resizeObserver.observe(screen);
@@ -132,9 +176,8 @@ class GhosttyTerminalView extends ItemView {
 
   private stopSession(): void {
     if (this.bodyEl) {
-      this.bodyEl.removeEventListener("keydown", this.handleKeyDown);
-      this.bodyEl.removeEventListener("paste", this.handlePaste);
       this.bodyEl.removeEventListener("mousedown", this.focusTerminal);
+      this.bodyEl.removeEventListener("click", this.focusTerminal);
     }
     if (this.resizeObserver) {
       this.resizeObserver.disconnect();
@@ -152,9 +195,41 @@ class GhosttyTerminalView extends ItemView {
       this.vt.free();
       this.vt = null;
     }
+    if (this.screenEl) {
+      this.screenEl.removeEventListener("scroll", this.handleScroll as EventListener);
+      this.screenEl.removeEventListener("wheel", this.handleWheel as EventListener);
+    }
+    if (this.inputEl) {
+      this.inputEl.removeEventListener("keydown", this.handleKeyDown, true);
+      this.inputEl.removeEventListener("paste", this.handlePaste, true);
+      this.inputEl.removeEventListener("input", this.handleInput, true);
+      this.inputEl.removeEventListener(
+        "compositionstart",
+        this.handleCompositionStart,
+        true
+      );
+      this.inputEl.removeEventListener(
+        "compositionupdate",
+        this.handleCompositionUpdate,
+        true
+      );
+      this.inputEl.removeEventListener(
+        "compositionend",
+        this.handleCompositionEnd,
+        true
+      );
+      this.inputEl.removeEventListener("focus", this.handleFocus);
+      this.inputEl.removeEventListener("blur", this.handleBlur);
+    }
     this.outputEl = null;
+    this.screenEl = null;
+    this.inputEl = null;
     this.pendingRender = false;
     this.charSize = null;
+    this.autoScroll = true;
+    this.composing = false;
+    this.compositionBuffer = "";
+    this.scrollLines = 0;
   }
 
   private scheduleRender(): void {
@@ -164,8 +239,9 @@ class GhosttyTerminalView extends ItemView {
       this.pendingRender = false;
       if (!this.outputEl || !this.vt) return;
       this.outputEl.setText(this.vt.dumpViewport());
-      const container = this.outputEl.parentElement;
-      if (container) {
+      this.updateCaret();
+      const container = this.screenEl;
+      if (container && this.autoScroll) {
         container.scrollTop = container.scrollHeight;
       }
     });
@@ -180,7 +256,7 @@ class GhosttyTerminalView extends ItemView {
   }
 
   private measureSize(): { cols: number; rows: number } {
-    const target = this.outputEl?.parentElement ?? this.bodyEl;
+    const target = this.screenEl ?? this.bodyEl;
     if (!target) {
       return { cols: 80, rows: 24 };
     }
@@ -193,27 +269,85 @@ class GhosttyTerminalView extends ItemView {
 
   private getCharSize(): { width: number; height: number } {
     if (this.charSize) return this.charSize;
-    if (!this.bodyEl) {
+    const target = this.outputEl ?? this.bodyEl;
+    if (!target) {
       return { width: 8, height: 16 };
     }
+    // Use a longer string and divide for more accurate measurement
+    const testString = "MMMMMMMMMM";
     const span = document.createElement("span");
-    span.textContent = "M";
+    span.textContent = testString;
     span.style.visibility = "hidden";
     span.style.position = "absolute";
     span.style.whiteSpace = "pre";
-    span.style.fontFamily = "var(--font-monospace)";
-    this.bodyEl.appendChild(span);
+    span.style.margin = "0";
+    span.style.padding = "0";
+    span.style.border = "none";
+    const style = getComputedStyle(target);
+    span.style.fontFamily = style.fontFamily || "var(--font-monospace)";
+    span.style.fontSize = style.fontSize || "12px";
+    span.style.lineHeight = style.lineHeight || "1.2";
+    span.style.letterSpacing = style.letterSpacing || "normal";
+    target.appendChild(span);
     const rect = span.getBoundingClientRect();
     span.remove();
     this.charSize = {
-      width: rect.width || 8,
+      width: (rect.width / testString.length) || 8,
       height: rect.height || 16,
     };
     return this.charSize;
   }
 
   private focusTerminal = (): void => {
-    this.bodyEl?.focus();
+    this.inputEl?.focus();
+  };
+
+  private updateCaret(): void {
+    if (!this.screenEl || !this.vt) return;
+    const cursor = this.vt.cursorPosition();
+    if (!cursor?.valid) return;
+    const { width, height } = this.getCharSize();
+    // Cursor position is 1-indexed from VT, convert to 0-indexed pixels
+    const x = (cursor.col - 1) * width;
+    const y = (cursor.row - 1) * height;
+    this.screenEl.style.setProperty("--ghostty-caret-x", `${x}px`);
+    this.screenEl.style.setProperty("--ghostty-caret-y", `${y}px`);
+    this.screenEl.style.setProperty("--ghostty-caret-w", `${width}px`);
+    this.screenEl.style.setProperty("--ghostty-caret-h", `${height}px`);
+  }
+
+  private handleFocus = (): void => {
+    this.screenEl?.addClass("is-focused");
+  };
+
+  private handleBlur = (): void => {
+    this.screenEl?.removeClass("is-focused");
+  };
+
+  private handleScroll = (): void => {
+    this.updateCaret();
+  };
+
+  private handleWheel = (event: WheelEvent): void => {
+    if (!this.vt) return;
+    event.preventDefault();
+
+    const { height } = this.getCharSize();
+    this.scrollLines += event.deltaY;
+
+    const linesToScroll = Math.trunc(this.scrollLines / height);
+    if (linesToScroll !== 0) {
+      this.scrollLines -= linesToScroll * height;
+      // Negative = scroll up (show older content), positive = scroll down
+      const result = this.vt.scrollViewport(linesToScroll);
+      if (result === 0) {
+        // Reset auto-scroll if user scrolls up
+        if (linesToScroll < 0) {
+          this.autoScroll = false;
+        }
+        this.scheduleRender();
+      }
+    }
   };
 
   private handlePaste = (event: ClipboardEvent): void => {
@@ -230,6 +364,14 @@ class GhosttyTerminalView extends ItemView {
     if (!this.pty) return;
 
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "j") {
+      return;
+    }
+    if (event.isComposing || event.key === "Process") {
+      return;
+    }
+
+    // Handle scroll keys with Shift modifier or Page Up/Down
+    if (this.handleScrollKey(event)) {
       return;
     }
 
@@ -256,10 +398,6 @@ class GhosttyTerminalView extends ItemView {
       data = "\x1b[C";
     } else if (event.key === "ArrowLeft") {
       data = "\x1b[D";
-    } else if (!event.metaKey && !event.ctrlKey && !event.altKey) {
-      if (event.key.length === 1) {
-        data = event.key;
-      }
     }
 
     if (data) {
@@ -267,6 +405,78 @@ class GhosttyTerminalView extends ItemView {
       event.preventDefault();
       event.stopPropagation();
     }
+  };
+
+  private handleScrollKey(event: KeyboardEvent): boolean {
+    if (!this.vt) return false;
+
+    let delta = 0;
+    const pageSize = this.measureSize().rows - 1;
+
+    if (event.key === "PageUp") {
+      delta = -pageSize;
+    } else if (event.key === "PageDown") {
+      delta = pageSize;
+    } else if (event.shiftKey && event.key === "ArrowUp") {
+      delta = -1;
+    } else if (event.shiftKey && event.key === "ArrowDown") {
+      delta = 1;
+    } else if (event.key === "Home" && event.shiftKey) {
+      // Scroll to top
+      this.vt.scrollViewport(-10000);
+      this.autoScroll = false;
+      this.scheduleRender();
+      event.preventDefault();
+      return true;
+    } else if (event.key === "End" && event.shiftKey) {
+      // Scroll to bottom
+      this.vt.scrollViewport(10000);
+      this.autoScroll = true;
+      this.scheduleRender();
+      event.preventDefault();
+      return true;
+    }
+
+    if (delta !== 0) {
+      const result = this.vt.scrollViewport(delta);
+      if (result === 0) {
+        if (delta < 0) this.autoScroll = false;
+        this.scheduleRender();
+      }
+      event.preventDefault();
+      return true;
+    }
+
+    return false;
+  };
+
+  private handleInput = (): void => {
+    if (!this.pty || !this.inputEl || this.composing) return;
+    const value = this.inputEl.value;
+    if (value.length > 0) {
+      this.pty.write(value);
+      this.inputEl.value = "";
+    }
+  };
+
+  private handleCompositionStart = (): void => {
+    this.composing = true;
+    this.compositionBuffer = "";
+  };
+
+  private handleCompositionUpdate = (event: CompositionEvent): void => {
+    this.compositionBuffer = event.data ?? "";
+  };
+
+  private handleCompositionEnd = (event: CompositionEvent): void => {
+    if (!this.pty || !this.inputEl) return;
+    const text = event.data ?? this.compositionBuffer;
+    if (text) {
+      this.pty.write(text);
+    }
+    this.inputEl.value = "";
+    this.composing = false;
+    this.compositionBuffer = "";
   };
 }
 
@@ -317,6 +527,10 @@ export default class GhosttyPlugin extends Plugin {
       this.nativeState = tryLoadGhosttyNative(this.resolvePluginDir());
     }
     return this.nativeState;
+  }
+
+  getPluginDirPath(): string {
+    return this.resolvePluginDir();
   }
 
   private resolvePluginDir(): string {

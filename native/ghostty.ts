@@ -10,7 +10,9 @@ export type GhosttyNative = {
 export type GhosttyTerminal = {
   feed(data: Uint8Array | string): number;
   resize(cols: number, rows: number): number;
+  scrollViewport(deltaLines: number): number;
   dumpViewport(): string;
+  cursorPosition(): { col: number; row: number; valid: boolean };
   free(): void;
 };
 
