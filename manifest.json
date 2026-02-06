@@ -1,6 +1,6 @@
 {
-  "id": "obsidian-ghostty",
-  "name": "Obsidian Ghostty Terminal",
+  "id": "ghostty-terminal",
+  "name": "Ghostty Terminal",
   "version": "0.1.0",
   "minAppVersion": "1.0.0",
   "description": "Embedded Ghostty-powered terminal view.",
