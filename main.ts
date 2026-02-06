@@ -17,7 +17,6 @@ class GhosttyTerminalView extends ItemView {
   private outputEl: HTMLPreElement | null = null;
   private bodyEl: HTMLElement | null = null;
   private screenEl: HTMLElement | null = null;
-  private statusEl: HTMLElement | null = null;
   private inputEl: HTMLTextAreaElement | null = null;
   private resizeObserver: ResizeObserver | null = null;
   private pendingRender = false;
@@ -48,28 +47,16 @@ class GhosttyTerminalView extends ItemView {
     contentEl.addClass("ghostty-terminal-view");
     console.info("[ghostty] terminal view opened");
 
-    contentEl.createEl("div", {
-      cls: "ghostty-terminal-header",
-      text: "Ghostty Terminal",
-    });
-
-    const body = contentEl.createEl("div", {
-      cls: "ghostty-terminal-body",
-    });
-    this.bodyEl = body;
+    this.bodyEl = contentEl;
 
     const nativeState = this.plugin.getNativeState(true);
-    this.statusEl = body.createEl("div", {
-      cls: "ghostty-terminal-status",
-      text: nativeState.message,
-    });
 
     if (nativeState.native) {
       this.startSession(nativeState.native);
     } else {
-      body.createEl("div", {
+      contentEl.createEl("div", {
         cls: "ghostty-terminal-placeholder",
-        text: "Native backend not loaded yet.",
+        text: nativeState.message,
       });
     }
   }
@@ -113,9 +100,10 @@ class GhosttyTerminalView extends ItemView {
       ({ spawn: spawnPty } = require(nodePtyPath) as typeof import("node-pty"));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      this.statusEl?.setText(
-        `Failed to load node-pty: ${message}. Ensure node_modules is present in the plugin folder.`
-      );
+      this.bodyEl?.createEl("div", {
+        cls: "ghostty-terminal-placeholder",
+        text: `Failed to load node-pty: ${message}`,
+      });
       return;
     }
 
@@ -168,10 +156,18 @@ class GhosttyTerminalView extends ItemView {
     this.inputEl.addEventListener("blur", this.handleBlur);
     this.inputEl.focus();
 
-    this.resizeObserver = new ResizeObserver(() => this.updateSize());
+    this.resizeObserver = new ResizeObserver(() => {
+      // Invalidate char size cache on resize
+      this.charSize = null;
+      this.updateSize();
+    });
     this.resizeObserver.observe(screen);
 
-    this.scheduleRender();
+    // Delay initial render to ensure styles are applied
+    requestAnimationFrame(() => {
+      this.charSize = null; // Re-measure after styles are applied
+      this.scheduleRender();
+    });
   }
 
   private stopSession(): void {
@@ -302,10 +298,24 @@ class GhosttyTerminalView extends ItemView {
     this.inputEl?.focus();
   };
 
+  focusInput(): void {
+    this.inputEl?.focus();
+  }
+
   private updateCaret(): void {
     if (!this.screenEl || !this.vt) return;
     const cursor = this.vt.cursorPosition();
-    if (!cursor?.valid) return;
+    if (!cursor?.valid) {
+      this.screenEl.style.setProperty("--ghostty-caret-visible", "0");
+      return;
+    }
+    
+    // Hide caret when scrolled away from the active screen
+    if (!this.autoScroll) {
+      this.screenEl.style.setProperty("--ghostty-caret-visible", "0");
+      return;
+    }
+    
     const { width, height } = this.getCharSize();
     // Cursor position is 1-indexed from VT, convert to 0-indexed pixels
     const x = (cursor.col - 1) * width;
@@ -314,6 +324,7 @@ class GhosttyTerminalView extends ItemView {
     this.screenEl.style.setProperty("--ghostty-caret-y", `${y}px`);
     this.screenEl.style.setProperty("--ghostty-caret-w", `${width}px`);
     this.screenEl.style.setProperty("--ghostty-caret-h", `${height}px`);
+    this.screenEl.style.setProperty("--ghostty-caret-visible", "1");
   }
 
   private handleFocus = (): void => {
@@ -341,9 +352,11 @@ class GhosttyTerminalView extends ItemView {
       // Negative = scroll up (show older content), positive = scroll down
       const result = this.vt.scrollViewport(linesToScroll);
       if (result === 0) {
-        // Reset auto-scroll if user scrolls up
         if (linesToScroll < 0) {
           this.autoScroll = false;
+        } else {
+          // Scrolling down - re-enable autoScroll
+          this.autoScroll = true;
         }
         this.scheduleRender();
       }
@@ -362,6 +375,9 @@ class GhosttyTerminalView extends ItemView {
 
   private handleKeyDown = (event: KeyboardEvent): void => {
     if (!this.pty) return;
+    
+    // Only handle when our input is focused
+    if (document.activeElement !== this.inputEl) return;
 
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "j") {
       return;
@@ -377,7 +393,37 @@ class GhosttyTerminalView extends ItemView {
 
     let data: string | null = null;
 
-    if (event.ctrlKey && event.key.length === 1) {
+    // Cmd+Backspace = Ctrl+U (kill line backward)
+    if (event.metaKey && event.key === "Backspace") {
+      data = "\x15";
+    // Cmd+A = Ctrl+A (beginning of line)
+    } else if (event.metaKey && event.key.toLowerCase() === "a") {
+      data = "\x01";
+    // Cmd+E = Ctrl+E (end of line)
+    } else if (event.metaKey && event.key.toLowerCase() === "e") {
+      data = "\x05";
+    // Cmd+K = Ctrl+K (kill to end of line)
+    } else if (event.metaKey && event.key.toLowerCase() === "k") {
+      data = "\x0b";
+    // Cmd+U = Ctrl+U (kill to beginning of line)
+    } else if (event.metaKey && event.key.toLowerCase() === "u") {
+      data = "\x15";
+    // Cmd+L = Ctrl+L (clear screen)
+    } else if (event.metaKey && event.key.toLowerCase() === "l") {
+      data = "\x0c";
+    // Option+Left = move back one word (Esc+b)
+    } else if (event.altKey && event.key === "ArrowLeft") {
+      data = "\x1bb";
+    // Option+Right = move forward one word (Esc+f)
+    } else if (event.altKey && event.key === "ArrowRight") {
+      data = "\x1bf";
+    // Option+Backspace = delete word backward (Esc+Backspace)
+    } else if (event.altKey && event.key === "Backspace") {
+      data = "\x1b\x7f";
+    // Option+D = delete word forward
+    } else if (event.altKey && event.key.toLowerCase() === "d") {
+      data = "\x1bd";
+    } else if (event.ctrlKey && event.key.length === 1) {
       const code = event.key.toUpperCase().charCodeAt(0) - 64;
       if (code >= 1 && code <= 26) {
         data = String.fromCharCode(code);
@@ -398,12 +444,22 @@ class GhosttyTerminalView extends ItemView {
       data = "\x1b[C";
     } else if (event.key === "ArrowLeft") {
       data = "\x1b[D";
+    // Home = beginning of line
+    } else if (event.key === "Home") {
+      data = "\x1b[H";
+    // End = end of line  
+    } else if (event.key === "End") {
+      data = "\x1b[F";
+    // Delete key
+    } else if (event.key === "Delete") {
+      data = "\x1b[3~";
     }
 
     if (data) {
       this.pty.write(data);
       event.preventDefault();
       event.stopPropagation();
+      event.stopImmediatePropagation();
     }
   };
 
@@ -427,6 +483,8 @@ class GhosttyTerminalView extends ItemView {
       this.autoScroll = false;
       this.scheduleRender();
       event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
       return true;
     } else if (event.key === "End" && event.shiftKey) {
       // Scroll to bottom
@@ -434,16 +492,20 @@ class GhosttyTerminalView extends ItemView {
       this.autoScroll = true;
       this.scheduleRender();
       event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
       return true;
     }
 
     if (delta !== 0) {
       const result = this.vt.scrollViewport(delta);
       if (result === 0) {
-        if (delta < 0) this.autoScroll = false;
+        this.autoScroll = delta > 0; // true if scrolling down, false if up
         this.scheduleRender();
       }
       event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
       return true;
     }
 
@@ -520,6 +582,14 @@ export default class GhosttyPlugin extends Plugin {
       await leaf.setViewState({ type: VIEW_TYPE_GHOSTTY, active: true });
     }
     workspace.revealLeaf(leaf);
+
+    // Focus the terminal input after it opens
+    setTimeout(() => {
+      const view = leaf.view as GhosttyTerminalView | undefined;
+      if (view && "focusInput" in view) {
+        (view as GhosttyTerminalView).focusInput();
+      }
+    }, 100);
   }
 
   getNativeState(refresh = false): GhosttyNativeState {
