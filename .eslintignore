@@ -1,0 +1,5 @@
+vendor/
+scripts/
+node_modules/
+main.js
+*.cjs

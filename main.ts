@@ -1,6 +1,6 @@
 import { existsSync } from "fs";
 import { join } from "path";
-import { ItemView, Notice, Plugin, WorkspaceLeaf } from "obsidian";
+import { ItemView, Plugin, WorkspaceLeaf } from "obsidian";
 import type { IPty } from "node-pty";
 import {
   tryLoadGhosttyNative,
@@ -34,7 +34,7 @@ class GhosttyTerminalView extends ItemView {
   }
 
   getDisplayText(): string {
-    return "Ghostty Terminal";
+    return "Ghostty terminal";
   }
 
   getIcon(): string {
@@ -45,11 +45,10 @@ class GhosttyTerminalView extends ItemView {
     const { contentEl } = this;
     contentEl.empty();
     contentEl.addClass("ghostty-terminal-view");
-    console.info("[ghostty] terminal view opened");
 
     this.bodyEl = contentEl;
 
-    const nativeState = this.plugin.getNativeState(true);
+    const nativeState = await Promise.resolve(this.plugin.getNativeState(true));
 
     if (nativeState.native) {
       this.startSession(nativeState.native);
@@ -62,6 +61,7 @@ class GhosttyTerminalView extends ItemView {
   }
 
   async onClose(): Promise<void> {
+    await Promise.resolve();
     this.stopSession();
     this.contentEl.empty();
   }
@@ -96,7 +96,7 @@ class GhosttyTerminalView extends ItemView {
       const nodePtyPath = pluginDir
         ? join(pluginDir, "node_modules", "node-pty")
         : "node-pty";
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires -- Native node-pty module needs runtime require() for dynamic path resolution in Electron
       ({ spawn: spawnPty } = require(nodePtyPath) as typeof import("node-pty"));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -112,7 +112,7 @@ class GhosttyTerminalView extends ItemView {
       (process.platform === "win32" ? "powershell.exe" : "/bin/zsh");
 
     const adapter = this.app.vault.adapter as { getBasePath?: () => string };
-    const cwd =
+    const cwd: string =
       adapter.getBasePath?.() || process.env.HOME || process.cwd() || "/";
 
     this.pty = spawnPty(shell, [], {
@@ -192,8 +192,8 @@ class GhosttyTerminalView extends ItemView {
       this.vt = null;
     }
     if (this.screenEl) {
-      this.screenEl.removeEventListener("scroll", this.handleScroll as EventListener);
-      this.screenEl.removeEventListener("wheel", this.handleWheel as EventListener);
+      this.screenEl.removeEventListener("scroll", this.handleScroll);
+      this.screenEl.removeEventListener("wheel", this.handleWheel);
     }
     if (this.inputEl) {
       this.inputEl.removeEventListener("keydown", this.handleKeyDown, true);
@@ -273,17 +273,7 @@ class GhosttyTerminalView extends ItemView {
     const testString = "MMMMMMMMMM";
     const span = document.createElement("span");
     span.textContent = testString;
-    span.style.visibility = "hidden";
-    span.style.position = "absolute";
-    span.style.whiteSpace = "pre";
-    span.style.margin = "0";
-    span.style.padding = "0";
-    span.style.border = "none";
-    const style = getComputedStyle(target);
-    span.style.fontFamily = style.fontFamily || "var(--font-monospace)";
-    span.style.fontSize = style.fontSize || "12px";
-    span.style.lineHeight = style.lineHeight || "1.2";
-    span.style.letterSpacing = style.letterSpacing || "normal";
+    span.addClass("ghostty-char-measure");
     target.appendChild(span);
     const rect = span.getBoundingClientRect();
     span.remove();
@@ -306,13 +296,13 @@ class GhosttyTerminalView extends ItemView {
     if (!this.screenEl || !this.vt) return;
     const cursor = this.vt.cursorPosition();
     if (!cursor?.valid) {
-      this.screenEl.style.setProperty("--ghostty-caret-visible", "0");
+      this.screenEl.setCssProps({ "--ghostty-caret-visible": "0" });
       return;
     }
     
     // Hide caret when scrolled away from the active screen
     if (!this.autoScroll) {
-      this.screenEl.style.setProperty("--ghostty-caret-visible", "0");
+      this.screenEl.setCssProps({ "--ghostty-caret-visible": "0" });
       return;
     }
     
@@ -320,11 +310,13 @@ class GhosttyTerminalView extends ItemView {
     // Cursor position is 1-indexed from VT, convert to 0-indexed pixels
     const x = (cursor.col - 1) * width;
     const y = (cursor.row - 1) * height;
-    this.screenEl.style.setProperty("--ghostty-caret-x", `${x}px`);
-    this.screenEl.style.setProperty("--ghostty-caret-y", `${y}px`);
-    this.screenEl.style.setProperty("--ghostty-caret-w", `${width}px`);
-    this.screenEl.style.setProperty("--ghostty-caret-h", `${height}px`);
-    this.screenEl.style.setProperty("--ghostty-caret-visible", "1");
+    this.screenEl.setCssProps({
+      "--ghostty-caret-x": `${x}px`,
+      "--ghostty-caret-y": `${y}px`,
+      "--ghostty-caret-w": `${width}px`,
+      "--ghostty-caret-h": `${height}px`,
+      "--ghostty-caret-visible": "1",
+    });
   }
 
   private handleFocus = (): void => {
@@ -545,49 +537,47 @@ class GhosttyTerminalView extends ItemView {
 export default class GhosttyPlugin extends Plugin {
   private nativeState: GhosttyNativeState | null = null;
   async onload(): Promise<void> {
-    console.info("[ghostty] plugin loaded");
-    new Notice("Ghostty plugin loaded");
     this.registerView(VIEW_TYPE_GHOSTTY, (leaf: WorkspaceLeaf) => {
       return new GhosttyTerminalView(leaf, this);
     });
 
     this.addCommand({
-      id: "open-ghostty-terminal",
-      name: "Open Ghostty Terminal",
-      hotkeys: [{ modifiers: ["Mod"], key: "J" }],
-      callback: () => this.activateView(),
+      id: "open",
+      name: "Open",
+      callback: () => {
+        this.activateView().catch(console.error);
+      },
     });
+
+    await Promise.resolve();
   }
 
-  async onunload(): Promise<void> {
-    this.app.workspace.detachLeavesOfType(VIEW_TYPE_GHOSTTY);
+  onunload(): void {
+    // Views are cleaned up automatically by Obsidian
   }
 
   private async activateView(): Promise<void> {
     const { workspace } = this.app;
     const existingLeaves = workspace.getLeavesOfType(VIEW_TYPE_GHOSTTY);
+
     if (existingLeaves.length > 0) {
-      workspace.detachLeavesOfType(VIEW_TYPE_GHOSTTY);
+      await workspace.revealLeaf(existingLeaves[0]);
+      const view = existingLeaves[0].view;
+      if (view instanceof GhosttyTerminalView) {
+        view.focusInput();
+      }
       return;
     }
 
-    let leaf = workspace.getLeavesOfType(VIEW_TYPE_GHOSTTY)[0];
-
-    if (!leaf) {
-      const splitLeaf = (workspace as any).getLeaf?.(
-        "split",
-        "horizontal"
-      ) as WorkspaceLeaf | undefined;
-      leaf = splitLeaf ?? workspace.getRightLeaf(false);
-      await leaf.setViewState({ type: VIEW_TYPE_GHOSTTY, active: true });
-    }
-    workspace.revealLeaf(leaf);
+    const leaf = workspace.getLeaf("split", "horizontal");
+    await leaf.setViewState({ type: VIEW_TYPE_GHOSTTY, active: true });
+    await workspace.revealLeaf(leaf);
 
     // Focus the terminal input after it opens
     setTimeout(() => {
-      const view = leaf.view as GhosttyTerminalView | undefined;
-      if (view && "focusInput" in view) {
-        (view as GhosttyTerminalView).focusInput();
+      const view = leaf.view;
+      if (view instanceof GhosttyTerminalView) {
+        view.focusInput();
       }
     }, 100);
   }
@@ -617,7 +607,7 @@ export default class GhosttyPlugin extends Plugin {
       const basePath = adapter.getBasePath();
       if (basePath) {
         candidates.push(
-          join(basePath, ".obsidian", "plugins", this.manifest.id)
+          join(basePath, this.app.vault.configDir, "plugins", this.manifest.id)
         );
       }
     }

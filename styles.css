@@ -54,6 +54,20 @@
   }
 }
 
+.ghostty-char-measure {
+  /* Inherits font properties from parent .ghostty-terminal-output */
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  letter-spacing: inherit;
+  visibility: hidden;
+  position: absolute;
+  white-space: pre;
+  margin: 0;
+  padding: 0;
+  border: none;
+}
+
 .ghostty-terminal-placeholder {
   font-size: 13px;
   color: var(--text-muted);
