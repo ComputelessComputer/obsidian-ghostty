@@ -549,11 +549,42 @@ export default class GhosttyPlugin extends Plugin {
       },
     });
 
+    this.addCommand({
+      id: "toggle",
+      name: "Toggle terminal",
+      hotkeys: [{ modifiers: ["Mod"], key: "j" }],
+      callback: () => {
+        this.toggleView().catch(console.error);
+      },
+    });
+
     await Promise.resolve();
   }
 
   onunload(): void {
     // Views are cleaned up automatically by Obsidian
+  }
+
+  private async toggleView(): Promise<void> {
+    const { workspace } = this.app;
+    const existingLeaves = workspace.getLeavesOfType(VIEW_TYPE_GHOSTTY);
+
+    if (existingLeaves.length > 0) {
+      const leaf = existingLeaves[0];
+      // If the terminal is focused, close it; otherwise reveal it
+      if (workspace.activeLeaf === leaf) {
+        leaf.detach();
+        return;
+      }
+      await workspace.revealLeaf(leaf);
+      const view = leaf.view;
+      if (view instanceof GhosttyTerminalView) {
+        view.focusInput();
+      }
+      return;
+    }
+
+    await this.activateView();
   }
 
   private async activateView(): Promise<void> {
