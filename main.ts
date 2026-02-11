@@ -96,7 +96,7 @@ class GhosttyTerminalView extends ItemView {
       const nodePtyPath = pluginDir
         ? join(pluginDir, "node_modules", "node-pty")
         : "node-pty";
-      // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires -- Native node-pty module needs runtime require() for dynamic path resolution in Electron
+      // eslint-disable-next-line @typescript-eslint/no-require-imports -- Native node-pty module needs runtime require() for dynamic path resolution in Electron
       ({ spawn: spawnPty } = require(nodePtyPath) as typeof import("node-pty"));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -372,6 +372,10 @@ class GhosttyTerminalView extends ItemView {
     if (document.activeElement !== this.inputEl) return;
 
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "j") {
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+      this.leaf.detach();
       return;
     }
     if (event.isComposing || event.key === "Process") {
@@ -542,17 +546,8 @@ export default class GhosttyPlugin extends Plugin {
     });
 
     this.addCommand({
-      id: "open",
-      name: "Open",
-      callback: () => {
-        this.activateView().catch(console.error);
-      },
-    });
-
-    this.addCommand({
       id: "toggle",
       name: "Toggle terminal",
-      hotkeys: [{ modifiers: ["Mod"], key: "j" }],
       callback: () => {
         this.toggleView().catch(console.error);
       },
@@ -572,7 +567,7 @@ export default class GhosttyPlugin extends Plugin {
     if (existingLeaves.length > 0) {
       const leaf = existingLeaves[0];
       // If the terminal is focused, close it; otherwise reveal it
-      if (workspace.activeLeaf === leaf) {
+      if (leaf.view.containerEl.contains(document.activeElement)) {
         leaf.detach();
         return;
       }

@@ -42,7 +42,7 @@ export function tryLoadGhosttyNative(
   }
 
   try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires -- Native .node addon needs runtime require() for dynamic path resolution in Electron
+    // eslint-disable-next-line @typescript-eslint/no-require-imports -- Native .node addon needs runtime require() for dynamic path resolution in Electron
     const native = require(modulePath) as GhosttyNative;
     return {
       native,
